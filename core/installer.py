@@ -340,14 +340,14 @@ class AdGuardVPNInstaller:
         return extract_dir
 
     def create_desktop_file(self):
-        """Создает .desktop файл для AdGuard VPN Manager"""
+        """Создает .desktop файл для AdGuard VPN Manager с проверкой существования"""
         try:
             # Путь к менеджеру
             manager_dir = os.path.expanduser("~/AdGuard VPN Manager")
             main_script = os.path.join(manager_dir, "main.py")
             icon_path = os.path.join(manager_dir, "ico/adguard.png")
 
-            # Проверяем существование файлов
+            # Проверяем существование файлов менеджера
             if not os.path.exists(main_script):
                 self.log_message("❌ Основной скрипт менеджера не найден")
                 return False
@@ -371,7 +371,6 @@ class AdGuardVPNInstaller:
     Terminal=false
     StartupNotify=true
     StartupWMClass=AdGuardVPNManager
-    StartupWMClass=AdGuardVPNManager
     MimeType=
     X-GNOME-UsesNotifications=true
     # Для KDE
@@ -380,64 +379,85 @@ class AdGuardVPNInstaller:
     OnlyShowIn=GNOME;XFCE;KDE;
     """
 
-            # Определяем правильный путь к рабочему столу
+            # Определяем пути для проверки и создания
             desktop_paths = [
                 os.path.expanduser("~/Рабочий стол/AdGuard_VPN_Manager.desktop"),  # Русский
                 os.path.expanduser("~/Desktop/AdGuard_VPN_Manager.desktop"),       # Английский
             ]
 
-            desktop_created = False
+            # Путь для меню приложений
+            home_dir = os.path.expanduser("~")
+            applications_path = os.path.join(home_dir, ".local/share/applications/AdGuard_VPN_Manager.desktop")
 
+            # ПРОВЕРКА: уже существуют ли все ярлыки
+            desktop_exists = False
+            applications_exists = os.path.exists(applications_path)
+
+            # Проверяем существование на рабочем столе
             for desktop_path in desktop_paths:
-                desktop_dir = os.path.dirname(desktop_path)
+                if os.path.exists(desktop_path):
+                    desktop_exists = True
+                    break
 
-                # Проверяем существует ли папка рабочего стола
-                if os.path.exists(desktop_dir):
-                    try:
-                        with open(desktop_path, 'w') as f:
-                            f.write(desktop_content)
-                        os.chmod(desktop_path, 0o755)
-                        self.log_message(f"✅ Ярлык создан: {desktop_path}")
-                        desktop_created = True
-                        break
-                    except Exception as e:
-                        self.log_message(f"❌ Ошибка создания ярлыка {desktop_path}: {e}")
+            # Если все ярлыки уже существуют, просто выходим
+            if desktop_exists and applications_exists:
+                return True
 
-            if not desktop_created:
-                self.log_message("❌ Не удалось создать ярлык на рабочем столе")
-                return False
+            # СОЗДАНИЕ ЯРЛЫКОВ (только если они не существуют)
 
-            # Создаем в меню приложений (используем sudo пароль)
-            try:
-                # Получаем домашнюю директорию пользователя
-                home_dir = os.path.expanduser("~")
-                applications_path = os.path.join(home_dir, ".local/share/applications/AdGuard_VPN_Manager.desktop")
+            # Создаем на рабочем столе (если не существует)
+            desktop_created = False
+            if not desktop_exists:
+                for desktop_path in desktop_paths:
+                    desktop_dir = os.path.dirname(desktop_path)
 
-                # Создаем директорию если не существует
-                applications_dir = os.path.dirname(applications_path)
-                os.makedirs(applications_dir, exist_ok=True)
+                    # Проверяем существует ли папка рабочего стола
+                    if os.path.exists(desktop_dir):
+                        try:
+                            with open(desktop_path, 'w') as f:
+                                f.write(desktop_content)
+                            os.chmod(desktop_path, 0o755)
+                            self.log_message(f"✅ Ярлык создан: {desktop_path}")
+                            desktop_created = True
+                            break
+                        except Exception as e:
+                            self.log_message(f"❌ Ошибка создания ярлыка {desktop_path}: {e}")
 
-                # Создаем файл напрямую
-                with open(applications_path, 'w') as f:
-                    f.write(desktop_content)
+                if not desktop_created:
+                    self.log_message("❌ Не удалось создать ярлык на рабочем столе")
+            else:
+                self.log_message("✅ Ярлык на рабочем столе уже существует")
 
-                # Устанавливаем права (644 - чтение для всех, запись только для владельца)
-                os.chmod(applications_path, 0o644)
+            # Создаем в меню приложений (если не существует)
+            if not applications_exists:
+                try:
+                    # Создаем директорию если не существует
+                    applications_dir = os.path.dirname(applications_path)
+                    os.makedirs(applications_dir, exist_ok=True)
 
-                self.log_message(f"✅ Добавлено в меню приложений: {applications_path}")
+                    # Создаем файл напрямую
+                    with open(applications_path, 'w') as f:
+                        f.write(desktop_content)
 
-                # ОБНОВЛЯЕМ КЭШ DESKTOP
-                self.log_message("🔄 Обновление кэша меню приложений...")
-                update_result = subprocess.run(['update-desktop-database', applications_dir],
-                                            capture_output=True, text=True)
+                    # Устанавливаем права (644 - чтение для всех, запись только для владельца)
+                    os.chmod(applications_path, 0o644)
 
-                if update_result.returncode == 0:
-                    self.log_message("✅ Кэш меню приложений обновлен")
-                else:
-                    self.log_message(f"⚠️ Не удалось обновить кэш: {update_result.stderr}")
+                    self.log_message(f"✅ Добавлено в меню приложений: {applications_path}")
 
-            except Exception as e:
-                self.log_message(f"❌ Ошибка создания файла .desktop: {str(e)}")
+                    # ОБНОВЛЯЕМ КЭШ DESKTOP
+                    self.log_message("🔄 Обновление кэша меню приложений...")
+                    update_result = subprocess.run(['update-desktop-database', applications_dir],
+                                                capture_output=True, text=True)
+
+                    if update_result.returncode == 0:
+                        self.log_message("✅ Кэш меню приложений обновлен")
+                    else:
+                        self.log_message(f"⚠️ Не удалось обновить кэш: {update_result.stderr}")
+
+                except Exception as e:
+                    self.log_message(f"❌ Ошибка создания файла .desktop: {str(e)}")
+            else:
+                self.log_message("✅ Ярлык в меню приложений уже существует")
 
             return True
 
