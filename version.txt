@@ -1,2 +1,2 @@
-1.1
-ссылка на скачивание нового релиза
+1.0
+https://github.com/mashakulina/AdGuardVPN_Manager/releases/latest/download/adguardvpn_manager.tar.gz
