@@ -169,44 +169,95 @@ class AuthWindow:
         self.root = tk.Tk()
         self.setup_window_properties()
         self.root.title("AdGuard VPN - Авторизация")
-        self.root.geometry("425x320")
+
+        # --- Определяем окружение ---
+        def is_steamdeck():
+            """Проверяет, запущено ли приложение на Steam Deck или SteamOS"""
+            try:
+                # Проверяем /etc/os-release
+                if os.path.exists("/etc/os-release"):
+                    with open("/etc/os-release") as f:
+                        os_info = f.read().lower()
+                        if "steamos" in os_info or "steam deck" in os_info:
+                            return True
+
+                # Проверяем по системному имени (fallback)
+                sys_name = platform.uname().machine.lower()
+                if "steam" in sys_name or "deck" in sys_name:
+                    return True
+
+                # Проверяем compositor (часто Gamescope)
+                result = subprocess.run(
+                    ["ps", "-A"], capture_output=True, text=True
+                )
+                if "gamescope" in result.stdout.lower():
+                    return True
+            except:
+                pass
+            return False
+
+        # --- Определяем размеры экрана ---
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Базовые размеры (оригинал)
+        base_width = 425
+        base_height = 320
+
+        # --- Учёт ориентации ---
+        if screen_height > screen_width:
+            # Портретная ориентация (например, у Steam Deck)
+            screen_width, screen_height = screen_height, screen_width
+
+        # --- Подстройка под Steam Deck / SteamOS ---
+        if is_steamdeck():
+            # На Steam Deck — чуть меньше, чтобы влезало в экран даже с рамкой
+            width = min(base_width + 20, screen_width + 20)
+            height = min(base_height + 40, screen_height + 40)
+            # Без центрирования (иначе Wayland игнорирует позицию)
+            self.root.geometry(f"{int(width)}x{int(height)}")
+        else:
+            # На обычных системах (CachyOS, Windows, etc.)
+            width = base_width
+            height = base_height
+            self.root.geometry(f"{width}x{height}")
+
         self.root.configure(bg='#182030')
 
         try:
             from tkinter import ttk
             style = ttk.Style()
-            style.theme_use('clam')  # или 'alt', 'classic' - простые темы
+            style.theme_use('clam')
         except:
             pass
 
         self.auth_success = False
         self.auth_url = None
+        self.monitoring = False
+        self.current_countdown = 20
+        self.check_count = 0
+        self.countdown_running = False
         self.setup_ui()
 
     def setup_window_properties(self):
         """Настройка свойств окна для корректного отображения"""
         self.root.title("AdGuard VPN Manager")
 
-        # Устанавливаем WM_CLASS (БЕЗ ПРОБЕЛОВ!)
         try:
             self.root.wm_class("AdGuardVPNManager")
         except:
             pass
 
-        # Устанавливаем иконку
         try:
             manager_dir = os.path.expanduser("~/AdGuard VPN Manager")
             icon_path = os.path.join(manager_dir, "ico/adguard.png")
             if os.path.exists(icon_path):
-                # Для PNG файлов в tkinter
                 icon = tk.PhotoImage(file=icon_path)
                 self.root.iconphoto(True, icon)
         except Exception as e:
             print(f"Не удалось установить иконку: {e}")
 
     def setup_ui(self):
-        from tkinter import ttk
-
         main_frame = tk.Frame(self.root, bg='#182030', padx=20, pady=15)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -230,14 +281,15 @@ class AuthWindow:
         instructions_text = (
             "1. Нажмите 'Открыть в браузере' для автоматического открытия\n"
             "2. Следуйте инструкциям на сайте\n"
-            "3. Дождитесь завершения авторизации"
+            "3. Дождитесь завершения авторизации\n"
+            "4. Для ускоренной проверки нажмите 'Проверить сейчас'"
         )
         tk.Label(instructions_frame, text=instructions_text, font=("Arial", 9),
                 fg='white', bg='#182030', justify=tk.LEFT).pack(anchor=tk.W)
 
-        # Кнопки
+        # Кнопки основного действия
         btn_frame = tk.Frame(main_frame, bg='#182030')
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=10)
 
         button_style = {
             'font': ('Arial', 10),
@@ -259,9 +311,14 @@ class AuthWindow:
                                        command=self.close_app, **button_style)
         exit_btn.grid(row=0, column=1)
 
-        # Центрируем весь фрейм с кнопками
+        # Центрируем основной фрейм с кнопками
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(1, weight=1)
+
+        # Кнопка для ускоренной проверки
+        self.check_now_btn = create_hover_button(main_frame, text="🔄 Проверить сейчас", command=self.force_check_auth, ** button_style)
+        self.check_now_btn.pack(pady=5)
+        self.check_now_btn.config(state='disabled')  # Изначально неактивна
 
         # Статус
         self.status_var = tk.StringVar(value="Нажмите кнопку для получения ссылки")
@@ -273,6 +330,7 @@ class AuthWindow:
         self.browser_btn.config(state='disabled')
 
     def close_app(self):
+        self.monitoring = False
         sys.exit()
 
     def get_auth_url(self):
@@ -320,19 +378,73 @@ class AuthWindow:
             return None
 
     def open_auth_browser(self):
-        """Открывает ссылку авторизации в браузере и запускает мониторинг статуса"""
         if not self.auth_url:
             return
 
         self.status_var.set("Открываю браузер...")
         webbrowser.open(self.auth_url)
 
-        self.status_var.set("Ожидание авторизации...")
+        self.status_var.set("Проверка авторизации")
         self.browser_btn.config(state='disabled')
+        self.check_now_btn.config(state='normal')  # Активируем кнопку проверки
 
+        # Запускаем мониторинг статуса авторизации
+        self.monitoring = True
         thread = threading.Thread(target=self._monitor_auth_status)
         thread.daemon = True
         thread.start()
+
+    def force_check_auth(self):
+        """Принудительная проверка статуса авторизации"""
+        if not self.monitoring:
+            return
+
+        self.status_var.set("⏩ Принудительная проверка...")
+        self.check_now_btn.config(state='disabled')  # Временно отключаем кнопку
+
+        # Прерываем текущий обратный отсчет
+        self.countdown_running = False
+
+        # Запускаем проверку в отдельном потоке
+        thread = threading.Thread(target=self._perform_auth_check)
+        thread.daemon = True
+        thread.start()
+
+    def _perform_auth_check(self):
+        """Выполняет проверку статуса авторизации"""
+        try:
+            result = subprocess.run(
+                ['adguardvpn-cli', 'list-locations'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                self.auth_success = True
+                self.root.after(0, self._auth_success)
+            else:
+                self.root.after(0, self._check_failed)
+
+        except Exception as e:
+            self.root.after(0, lambda: self._check_failed(f"Ошибка: {str(e)}"))
+
+    def _check_failed(self, error_msg=None):
+        """Обработка неудачной проверки"""
+        if error_msg:
+            self.status_var.set(f"❌ {error_msg}")
+        else:
+            self.status_var.set("❌ Авторизация еще не завершена")
+
+        # Через 3 секунды возвращаем к обычному циклу
+        self.root.after(3000, self._resume_normal_check)
+
+    def _resume_normal_check(self):
+        """Возобновление обычного цикла проверки"""
+        if self.monitoring:
+            self.status_var.set("Возобновление автоматической проверки...")
+            self.check_now_btn.config(state='normal')
+            # Следующая проверка начнется автоматически в основном цикле
 
     def copy_auth_url(self):
         """Копирует ссылку авторизации в буфер обмена"""
@@ -358,7 +470,6 @@ class AuthWindow:
 
     def _show_auth_url(self, auth_url):
         """Показывает полученную ссылку в интерфейсе"""
-
         display_url = auth_url
         if len(display_url) > 60:
             display_url = display_url[:60] + "..."
@@ -369,42 +480,57 @@ class AuthWindow:
         self.browser_btn.config(state='normal')
 
     def _monitor_auth_status(self):
-        """Мониторит статус авторизации"""
-        max_attempts = 60
-        attempt = 0
+        """Мониторит статус авторизации с цикличной проверкой каждые 20 секунд"""
+        self.check_count = 0
 
-        while attempt < max_attempts:
+        while self.monitoring:
             try:
-                result = subprocess.run(
-                    ['adguardvpn-cli', 'list-locations'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
+                self.check_count += 1
+                self.countdown_running = True
 
-                if result.returncode == 0:
-                    self.auth_success = True
-                    self.root.after(0, self._auth_success)
-                    return
+                # Показываем обратный отсчет 20 секунд
+                for countdown in range(20, 0, -1):
+                    if not self.monitoring:
+                        return
+                    if not self.countdown_running:
+                        break  # Прерываем отсчет если была принудительная проверка
 
-                attempt += 1
-                time.sleep(5)
-                self.root.after(0, lambda: self.status_var.set(f"Ожидание авторизации... ({attempt}/{max_attempts})"))
+                    self.current_countdown = countdown
+                    self.root.after(0, lambda c=countdown: self.status_var.set(
+                        f"Проверка авторизации через: {c} сек (попытка #{self.check_count})"
+                    ))
+                    time.sleep(1)
+
+                # Если отсчет не был прерван, выполняем проверку
+                if self.countdown_running:
+                    self._perform_auth_check()
+
+                # Сбрасываем флаг для следующего цикла
+                self.countdown_running = True
+
+                # Небольшая пауза перед следующим циклом
+                time.sleep(1)
 
             except Exception as e:
-                attempt += 1
-                time.sleep(5)
-
-        self.root.after(0, lambda: self._auth_fail("Время ожидания истекло"))
+                # При ошибке продолжаем цикл
+                self.root.after(0, lambda: self.status_var.set(
+                    f"Ошибка проверки, повтор через 20 сек (попытка #{self.check_count})"
+                ))
+                self.countdown_running = True
+                continue
 
     def _auth_success(self):
         """Успешная авторизация"""
-        self.status_var.set("Авторизация успешна!")
+        self.monitoring = False
+        self.countdown_running = False
+        self.status_var.set("✅ Авторизация успешна!")
         self.auth_success = True
-        self.root.destroy()
+        self.check_now_btn.config(state='disabled')
+        self.root.after(2000, self.root.destroy)
 
     def _auth_fail(self, error_msg):
         self.browser_btn.config(state='normal')
+        self.check_now_btn.config(state='disabled')
         self.status_var.set("Ошибка авторизации")
 
     def show_custom_question(self, title, message):
@@ -424,7 +550,59 @@ class ManagerAuthWindow:
         self.root = tk.Toplevel(parent)
         self.setup_window_properties()
         self.root.title("AdGuard VPN - Авторизация")
-        self.root.geometry("425x320")
+
+        # --- Определяем окружение ---
+        def is_steamdeck():
+            """Проверяет, запущено ли приложение на Steam Deck или SteamOS"""
+            try:
+                # Проверяем /etc/os-release
+                if os.path.exists("/etc/os-release"):
+                    with open("/etc/os-release") as f:
+                        os_info = f.read().lower()
+                        if "steamos" in os_info or "steam deck" in os_info:
+                            return True
+
+                # Проверяем по системному имени (fallback)
+                sys_name = platform.uname().machine.lower()
+                if "steam" in sys_name or "deck" in sys_name:
+                    return True
+
+                # Проверяем compositor (часто Gamescope)
+                result = subprocess.run(
+                    ["ps", "-A"], capture_output=True, text=True
+                )
+                if "gamescope" in result.stdout.lower():
+                    return True
+            except:
+                pass
+            return False
+
+        # --- Определяем размеры экрана ---
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Базовые размеры (оригинал)
+        base_width = 425
+        base_height = 320
+
+        # --- Учёт ориентации ---
+        if screen_height > screen_width:
+            # Портретная ориентация (например, у Steam Deck)
+            screen_width, screen_height = screen_height, screen_width
+
+        # --- Подстройка под Steam Deck / SteamOS ---
+        if is_steamdeck():
+            # На Steam Deck — чуть меньше, чтобы влезало в экран даже с рамкой
+            width = min(base_width + 20, screen_width + 20)
+            height = min(base_height + 40, screen_height + 40)
+            # Без центрирования (иначе Wayland игнорирует позицию)
+            self.root.geometry(f"{int(width)}x{int(height)}")
+        else:
+            # На обычных системах (CachyOS, Windows, etc.)
+            width = base_width
+            height = base_height
+            self.root.geometry(f"{width}x{height}")
+
         self.root.configure(bg='#182030')
 
         # Явно позиционируем относительно родительского окна
@@ -434,12 +612,16 @@ class ManagerAuthWindow:
         try:
             from tkinter import ttk
             style = ttk.Style()
-            style.theme_use('clam')  # или 'alt', 'classic' - простые темы
+            style.theme_use('clam')
         except:
             pass
 
         self.auth_success = False
         self.auth_url = None
+        self.monitoring = False
+        self.current_countdown = 20
+        self.check_count = 0
+        self.countdown_running = False
         self.setup_ui()
 
     def setup_window_properties(self):
@@ -487,14 +669,15 @@ class ManagerAuthWindow:
         instructions_text = (
             "1. Нажмите 'Открыть в браузере' для автоматического открытия\n"
             "2. Следуйте инструкциям на сайте\n"
-            "3. Дождитесь завершения авторизации"
+            "3. Дождитесь завершения авторизации\n"
+            "4. Для ускоренной проверки нажмите 'Проверить сейчас'"
         )
         tk.Label(instructions_frame, text=instructions_text, font=("Arial", 9),
                 fg='white', bg='#182030', justify=tk.LEFT).pack(anchor=tk.W)
 
-        # Кнопки
+        # Кнопки основного действия
         btn_frame = tk.Frame(main_frame, bg='#182030')
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=10)
 
         button_style = {
             'font': ('Arial', 10),
@@ -516,9 +699,14 @@ class ManagerAuthWindow:
                                               command=self.cancel, **button_style)
         self.cancel_btn.grid(row=0, column=1)
 
-        # Центрируем весь фрейм с кнопками
+        # Центрируем основной фрейм с кнопками
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(1, weight=1)
+
+        # Кнопка для ускоренной проверки
+        self.check_now_btn = create_hover_button(main_frame, text="🔄 Проверить сейчас", command=self.force_check_auth, ** button_style)
+        self.check_now_btn.pack(pady=5)
+        self.check_now_btn.config(state='disabled')
 
         # Статус
         self.status_var = tk.StringVar(value="Получение ссылки для авторизации...")
@@ -531,6 +719,8 @@ class ManagerAuthWindow:
 
     def cancel(self):
         """Закрывает окно авторизации"""
+        self.monitoring = False
+        self.countdown_running = False
         self.auth_success = False
         self.root.destroy()
 
@@ -589,49 +779,119 @@ class ManagerAuthWindow:
         self.status_var.set("Ожидание авторизации...")
         self.browser_btn.config(state='disabled')
         self.cancel_btn.config(state='disabled')
+        self.check_now_btn.config(state='normal')  # Активируем кнопку проверки
 
+        # Запускаем мониторинг статуса авторизации
+        self.monitoring = True
         thread = threading.Thread(target=self._monitor_auth_status)
         thread.daemon = True
         thread.start()
 
+    def force_check_auth(self):
+        """Принудительная проверка статуса авторизации"""
+        if not self.monitoring:
+            return
+
+        self.status_var.set("⏩ Принудительная проверка...")
+        self.check_now_btn.config(state='disabled')  # Временно отключаем кнопку
+
+        # Прерываем текущий обратный отсчет
+        self.countdown_running = False
+
+        # Запускаем проверку в отдельном потоке
+        thread = threading.Thread(target=self._perform_auth_check)
+        thread.daemon = True
+        thread.start()
+
+    def _perform_auth_check(self):
+        """Выполняет проверку статуса авторизации"""
+        try:
+            result = subprocess.run(
+                ['adguardvpn-cli', 'list-locations'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                self.auth_success = True
+                self.root.after(0, self._auth_success)
+            else:
+                self.root.after(0, self._check_failed)
+
+        except Exception as e:
+            self.root.after(0, lambda: self._check_failed(f"Ошибка: {str(e)}"))
+
+    def _check_failed(self, error_msg=None):
+        """Обработка неудачной проверки"""
+        if error_msg:
+            self.status_var.set(f"❌ {error_msg}")
+        else:
+            self.status_var.set("❌ Авторизация еще не завершена")
+
+        # Через 3 секунды возвращаем к обычному циклу
+        self.root.after(3000, self._resume_normal_check)
+
+    def _resume_normal_check(self):
+        """Возобновление обычного цикла проверки"""
+        if self.monitoring:
+            self.status_var.set("Возобновление автоматической проверки...")
+            self.check_now_btn.config(state='normal')
+            # Следующая проверка начнется автоматически в основном цикле
+
     def _monitor_auth_status(self):
-        """Мониторит статус авторизации"""
-        max_attempts = 60
-        attempt = 0
+        """Мониторит статус авторизации с цикличной проверкой каждые 20 секунд"""
+        self.check_count = 0
 
-        while attempt < max_attempts:
+        while self.monitoring:
             try:
-                result = subprocess.run(
-                    ['adguardvpn-cli', 'list-locations'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
+                self.check_count += 1
+                self.countdown_running = True
 
-                if result.returncode == 0:
-                    self.auth_success = True
-                    self.root.after(0, self._auth_success)
-                    return
+                # Показываем обратный отсчет 20 секунд
+                for countdown in range(20, 0, -1):
+                    if not self.monitoring:
+                        return
+                    if not self.countdown_running:
+                        break  # Прерываем отсчет если была принудительная проверка
 
-                attempt += 1
-                time.sleep(5)
-                self.root.after(0, lambda: self.status_var.set(f"Ожидание авторизации... ({attempt}/{max_attempts})"))
+                    self.current_countdown = countdown
+                    self.root.after(0, lambda c=countdown: self.status_var.set(
+                        f"Проверка авторизации через: {c} сек (попытка #{self.check_count})"
+                    ))
+                    time.sleep(1)
+
+                # Если отсчет не был прерван, выполняем проверку
+                if self.countdown_running:
+                    self._perform_auth_check()
+
+                # Сбрасываем флаг для следующего цикла
+                self.countdown_running = True
+
+                # Небольшая пауза перед следующим циклом
+                time.sleep(1)
 
             except Exception as e:
-                attempt += 1
-                time.sleep(5)
-
-        self.root.after(0, lambda: self._auth_fail("Время ожидания истекло"))
+                # При ошибке продолжаем цикл
+                self.root.after(0, lambda: self.status_var.set(
+                    f"Ошибка проверки, повтор через 20 сек (попытка #{self.check_count})"
+                ))
+                self.countdown_running = True
+                continue
 
     def _auth_success(self):
         """Успешная авторизация"""
+        self.monitoring = False
+        self.countdown_running = False
         self.status_var.set("✅ Авторизация успешна!")
         self.auth_success = True
+        self.check_now_btn.config(state='disabled')
         self.root.after(2000, self.root.destroy)  # Закрываем через 2 секунды
 
     def _auth_fail(self, error_msg):
         self.browser_btn.config(state='normal')
         self.cancel_btn.config(state='normal')
+        self.check_now_btn.config(state='disabled')
         self.status_var.set("❌ Ошибка авторизации")
 
     def start_auth_process(self):

@@ -1,2 +1,2 @@
 1.0
-https://github.com/mashakulina/AdGuardVPN_Manager/releases/latest/download/adguardvpn_manager.tar.gz
+https://github.com/mashakulina/AdGuard_Manager/releases/latest/download/adguard_manager.tar.gz

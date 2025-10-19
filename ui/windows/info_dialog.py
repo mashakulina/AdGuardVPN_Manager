@@ -257,7 +257,7 @@ def show_info_dialog(parent):
         webbrowser.open("https://adguard-vpn.com/kb/")
 
     def open_github_page(event):
-        webbrowser.open("https://github.com/mashakulina/AdGuardVPN_Manager")
+        webbrowser.open("https://github.com/mashakulina/AdGuard_Manager")
 
     # Функция для создания ссылки с разделенной иконкой и текстом
     def create_link_with_icon(parent, icon, text, command_func):
